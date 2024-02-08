@@ -2,6 +2,7 @@ package ru.solnyshko.common.spring.jpa.annotation.processor;
 
 import com.google.auto.service.AutoService;
 import com.squareup.javapoet.AnnotationSpec;
+import com.squareup.javapoet.ArrayTypeName;
 import com.squareup.javapoet.ClassName;
 import com.squareup.javapoet.CodeBlock;
 import com.squareup.javapoet.JavaFile;
@@ -179,7 +180,8 @@ public class SimpleSpecificationGenerator extends AbstractProcessor {
 
             specMethodsBuilder.addIsNullMethods(fieldParameter);
             specMethodsBuilder.addEqualMethods(fieldParameter);
-            specMethodsBuilder.addInMethods(fieldParameter);
+            specMethodsBuilder.addInCollectionMethods(fieldParameter);
+            specMethodsBuilder.addInVarargsElementsMethods(fieldParameter);
         });
 
         enumFields.forEach((fieldName, fieldTypeName) -> {
@@ -188,7 +190,8 @@ public class SimpleSpecificationGenerator extends AbstractProcessor {
                     .build();
 
             specMethodsBuilder.addEqualMethods(fieldParameter);
-            specMethodsBuilder.addInMethods(fieldParameter);
+            specMethodsBuilder.addInCollectionMethods(fieldParameter);
+            specMethodsBuilder.addInVarargsElementsMethods(fieldParameter);
         });
 
         collectionFields.forEach((fieldName, fieldTypeName) -> {
@@ -211,16 +214,39 @@ public class SimpleSpecificationGenerator extends AbstractProcessor {
                 case "java.lang.String" -> {
                     specMethodsBuilder.addIsNullMethods(fieldParameter);
                     specMethodsBuilder.addEqualMethods(fieldParameter);
-                    specMethodsBuilder.addInMethods(fieldParameter);
+                    specMethodsBuilder.addInCollectionMethods(fieldParameter);
+                    specMethodsBuilder.addInVarargsElementsMethods(fieldParameter);
                     specMethodsBuilder.addLikeMethods(fieldParameter);
                     specMethodsBuilder.addStartsWithMethods(fieldParameter);
                     specMethodsBuilder.addEndsWithMethods(fieldParameter);
                 }
 
-                case "java.lang.Long", "java.lang.Integer" -> {
+                case "char" -> {
+                    specMethodsBuilder.addEqualMethods(fieldParameter);
+                    specMethodsBuilder.addInVarargsElementsMethods(fieldParameter);
+                }
+
+                case "java.lang.Character" -> {
+                    specMethodsBuilder.addEqualMethods(fieldParameter);
+                    specMethodsBuilder.addInCollectionMethods(fieldParameter);
+                    specMethodsBuilder.addInVarargsElementsMethods(fieldParameter);
+                }
+
+                case "byte", "short", "int", "long", "float", "double" -> {
+                    specMethodsBuilder.addEqualMethods(fieldParameter);
+                    specMethodsBuilder.addInVarargsElementsMethods(fieldParameter);
+                    specMethodsBuilder.addGreaterThanMethods(fieldParameter, false);
+                    specMethodsBuilder.addGreaterThanOrEqualToMethods(fieldParameter, false);
+                    specMethodsBuilder.addLessThanMethods(fieldParameter, false);
+                    specMethodsBuilder.addLessThanOrEqualToMethods(fieldParameter, false);
+                    specMethodsBuilder.addBetweenMethods(fieldParameter);
+                }
+
+                case "java.lang.Integer", "java.lang.Long", "java.lang.Float", "java.lang.Double" -> {
                     specMethodsBuilder.addIsNullMethods(fieldParameter);
                     specMethodsBuilder.addEqualMethods(fieldParameter);
-                    specMethodsBuilder.addInMethods(fieldParameter);
+                    specMethodsBuilder.addInCollectionMethods(fieldParameter);
+                    specMethodsBuilder.addInVarargsElementsMethods(fieldParameter);
                     specMethodsBuilder.addGreaterThanMethods(fieldParameter, false);
                     specMethodsBuilder.addGreaterThanOrEqualToMethods(fieldParameter, false);
                     specMethodsBuilder.addLessThanMethods(fieldParameter, false);
@@ -238,7 +264,7 @@ public class SimpleSpecificationGenerator extends AbstractProcessor {
                     specMethodsBuilder.addBetweenMethods(fieldParameter);
                 }
 
-                case "java.lang.Boolean" -> {
+                case "boolean", "java.lang.Boolean" -> {
                     specMethodsBuilder.addIsTrueMethods(fieldParameter);
                 }
 
@@ -372,6 +398,10 @@ public class SimpleSpecificationGenerator extends AbstractProcessor {
             return CodeBlock.of(formattedStatement);
         }
 
+        private static boolean isArrayType(TypeName typeName) {
+            return typeName.toString().contains("[]");
+        }
+
         // METHODS
 
         private void addIsNullMethods(ParameterSpec fieldParameterSpec) {
@@ -419,7 +449,37 @@ public class SimpleSpecificationGenerator extends AbstractProcessor {
             );
         }
 
-        private void addInMethods(ParameterSpec fieldParameterSpec) {
+        private void addInVarargsElementsMethods(ParameterSpec fieldParameterSpec) {
+            String genericMethodName = fieldParameterSpec.name + "In";
+            TypeName arrayTypeName = ArrayTypeName.of(fieldParameterSpec.type);
+
+            ParameterSpec collectionParameterSpec = ParameterSpec
+                    .builder(arrayTypeName, "elements")
+                    .build();
+
+            String predicateStatement = String.format("" +
+                            "return root.get(\"%s\").in((Object)%s)",
+                    fieldParameterSpec.name,
+                    collectionParameterSpec.name
+            );
+
+            addPredicateWithSpecificationFilterMethods(
+                    genericMethodName,
+                    predicateStatement,
+                    collectionParameterSpec
+            );
+
+            String genericNegatedMethodName = fieldParameterSpec.name + "NotIn";
+            String predicateNegatedStatement = predicateStatement + ".not()";
+
+            addPredicateWithSpecificationFilterMethods(
+                    genericNegatedMethodName,
+                    predicateNegatedStatement,
+                    collectionParameterSpec
+            );
+        }
+
+        private void addInCollectionMethods(ParameterSpec fieldParameterSpec) {
             String genericMethodName = fieldParameterSpec.name + "In";
 
             ParameterizedTypeName collectionTypeName = ParameterizedTypeName.get(
@@ -940,6 +1000,11 @@ public class SimpleSpecificationGenerator extends AbstractProcessor {
                 methodSpecBuilder.addParameter(parameterSpec);
             }
 
+            if (parameterSpecs.length != 0) {
+                ParameterSpec lastParameter = parameterSpecs[parameterSpecs.length - 1];
+                methodSpecBuilder.varargs(isArrayType(lastParameter.type));
+            }
+
             return methodSpecBuilder
                     .build();
         }
@@ -957,6 +1022,11 @@ public class SimpleSpecificationGenerator extends AbstractProcessor {
 
             for (ParameterSpec parameterSpec : parameterSpecs) {
                 methodSpecBuilder.addParameter(parameterSpec);
+            }
+
+            if (parameterSpecs.length != 0) {
+                ParameterSpec lastParameter = parameterSpecs[parameterSpecs.length - 1];
+                methodSpecBuilder.varargs(isArrayType(lastParameter.type));
             }
 
             return methodSpecBuilder

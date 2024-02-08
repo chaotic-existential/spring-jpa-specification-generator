@@ -31,11 +31,7 @@ class EntitySpec {
 For every entity field a bunch of methods are generated depending on this field type.
 
 ```java
-// <!> Note: primitive types are not recognized.
-// <!> Only null check filters are generated for them.
-```
-```java
-// <!> Note: null checks are not generated for enums & collections.
+// <!> Note: null checks are not generated for primitives, enums & collections.
 
 public Predicate fieldNameIsNull(From<?, T> root, CriteriaBuilder cb) {
   return cb.isNull(root.get("fieldName"));
@@ -58,6 +54,19 @@ public Predicate fieldNameIn(From<?, T> root, CriteriaBuilder cb, Collection<T> 
 }
 
 public Specification<T> fieldNameIn(Collection<T> collection) {
+  return (root, query, cb) -> fieldNameIn(root, cb);
+}
+```
+
+```java
+// <!> Note: in checks accept not only collections, but varargs as well.
+// <!> Varargs are cast to (Object...) so that it works fine with primitives.
+
+public Predicate fieldNameIn(From<?, T> root, CriteriaBuilder cb, T... elements) {
+  return root.get("fieldName").in((Object)elements);
+}
+
+public Specification<T> fieldNameIn(T... elements) {
   return (root, query, cb) -> fieldNameIn(root, cb);
 }
 ```
