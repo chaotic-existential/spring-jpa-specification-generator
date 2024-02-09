@@ -21,9 +21,12 @@ import jakarta.persistence.criteria.From;
 import jakarta.persistence.criteria.Join;
 import jakarta.persistence.criteria.JoinType;
 import jakarta.persistence.criteria.Predicate;
+import lombok.Setter;
 import lombok.SneakyThrows;
+import lombok.experimental.Accessors;
 import lombok.experimental.UtilityClass;
 import org.springframework.data.jpa.domain.Specification;
+import ru.solnyshko.common.spring.jpa.annotation.processor.util.FieldCategory;
 
 import javax.annotation.processing.AbstractProcessor;
 import javax.annotation.processing.Generated;
@@ -39,9 +42,9 @@ import javax.lang.model.element.Modifier;
 import javax.lang.model.element.TypeElement;
 import javax.tools.JavaFileObject;
 import java.io.PrintWriter;
+import java.util.ArrayList;
 import java.util.Collection;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.List;
 import java.util.Set;
 
 @SupportedAnnotationTypes("jakarta.persistence.Entity")
@@ -71,29 +74,11 @@ public class SimpleSpecificationGenerator extends AbstractProcessor {
 
     @SneakyThrows
     private void generateSpecClass(String packageName, String className, Element classElement) {
-        Map<String, TypeName> idFields = new HashMap<>();
-        Map<String, TypeName> enumFields = new HashMap<>();
-        Map<String, TypeName> collectionFields = new HashMap<>();
-        Map<String, TypeName> regularFields = new HashMap<>();
+        List<FieldMetadata> fieldsMetadata = new ArrayList<>();
 
         for (Element enclosedElement : classElement.getEnclosedElements()) {
-
             if (enclosedElement.getKind() == ElementKind.FIELD) {
-                String elementClassName = enclosedElement.toString();
-                TypeName elementTypeName = TypeName.get(enclosedElement.asType());
-
-                if (isIdField(enclosedElement)) {
-                    idFields.put(elementClassName, elementTypeName);
-
-                } else if (isEnumeratedStringField(enclosedElement)) {
-                    enumFields.put(elementClassName, elementTypeName);
-
-                } else if (isCollection(elementTypeName)) {
-                    collectionFields.put(elementClassName, elementTypeName);
-
-                } else {
-                    regularFields.put(elementClassName, elementTypeName);
-                }
+                fieldsMetadata.add(buildFieldMetadata(enclosedElement));
             }
         }
 
@@ -106,21 +91,95 @@ public class SimpleSpecificationGenerator extends AbstractProcessor {
                     packageName,
                     specClassName,
                     className,
-                    idFields,
-                    enumFields,
-                    collectionFields,
-                    regularFields
+                    fieldsMetadata
             );
 
             out.write(classContent);
         }
     }
 
-    private static boolean isIdField(Element enclosedElement) {
-        // May encapsulate any way of determining if a field is used for identification
-        // For such fields only isNull, isEq and isIn specs will be generated
+    @Setter
+    @Accessors(chain = true)
+    private static class FieldMetadata {
+        private TypeName fieldTypeName;
+        private String fieldName;
+        private FieldCategory fieldCategory;
+        private boolean isNullable = false;
+        private boolean isPrimitive = false;
+    }
+
+    private FieldMetadata buildFieldMetadata(Element enclosedElement) {
+        FieldMetadata fieldMetadata = new FieldMetadata()
+                .setFieldName(enclosedElement.toString())
+                .setFieldTypeName(TypeName.get(enclosedElement.asType()));
+
+        if (isCollection(TypeName.get(enclosedElement.asType()))) {
+            return fieldMetadata.setFieldCategory(FieldCategory.COLLECTION);
+        }
+
+        if (isEnumeratedStringField(enclosedElement)){
+            return fieldMetadata.setFieldCategory(FieldCategory.ENUM);
+        }
+
+        if (isPrimaryIdField(enclosedElement)) {
+            return fieldMetadata.setFieldCategory(FieldCategory.PRIMARY_ID);
+        }
+
+        switch (enclosedElement.asType().toString()) {
+            case "java.lang.String" -> fieldMetadata
+                    .setFieldCategory(FieldCategory.STRING)
+                    .setNullable(true);
+
+            case "java.lang.Character" -> fieldMetadata
+                    .setFieldCategory(FieldCategory.CHARACTER)
+                    .setNullable(true);
+
+            case "char" -> fieldMetadata
+                    .setFieldCategory(FieldCategory.CHARACTER)
+                    .setPrimitive(true);
+
+            case "java.lang.Integer", "java.lang.Long", "java.lang.Float", "java.lang.Double" -> fieldMetadata
+                    .setFieldCategory(FieldCategory.NUMERIC)
+                    .setNullable(true);
+
+            case "byte", "short", "int", "long", "float", "double" -> fieldMetadata
+                    .setFieldCategory(FieldCategory.NUMERIC)
+                    .setPrimitive(true);
+
+            case "java.time.LocalDate", "java.time.LocalTime", "java.time.LocalDateTime" -> fieldMetadata
+                    .setFieldCategory(FieldCategory.TEMPORAL)
+                    .setNullable(true);
+
+            case "java.lang.Boolean" -> fieldMetadata
+                    .setFieldCategory(FieldCategory.BOOLEAN)
+                    .setNullable(true);
+
+            case "boolean" -> fieldMetadata
+                    .setFieldCategory(FieldCategory.BOOLEAN)
+                    .setPrimitive(true);
+        }
+
+        if (isForeignIdField(enclosedElement)) {
+            // <!> Overrides category to FOREIGN_ID preserving non-nullability for primitives
+            return fieldMetadata.setFieldCategory(FieldCategory.FOREIGN_ID)
+                    .setNullable(!fieldMetadata.isPrimitive);
+        }
+
+        if (fieldMetadata.fieldCategory == null) {
+            fieldMetadata.setFieldCategory(FieldCategory.OBJECT);
+        }
+
+        return fieldMetadata;
+    }
+
+    private static boolean isPrimaryIdField(Element enclosedElement) {
         return enclosedElement.getAnnotationMirrors().stream().anyMatch(
                 mirror -> mirror.getAnnotationType().toString().equals(Id.class.getName()));
+    }
+
+    private static boolean isForeignIdField(Element enclosedElement) {
+        String elementName = enclosedElement.toString();
+        return elementName.endsWith("Id") || elementName.endsWith("Uuid");
     }
 
     private static boolean isEnumeratedStringField(Element enclosedElement) {
@@ -150,10 +209,7 @@ public class SimpleSpecificationGenerator extends AbstractProcessor {
             String packageName,
             String className,
             String entityName,
-            Map<String, TypeName> idFields,
-            Map<String, TypeName> enumFields,
-            Map<String, TypeName> collectionFields,
-            Map<String, TypeName> regularFields
+            List<FieldMetadata> fieldsMetadata
     ) {
         AnnotationSpec utilityClassAnnotationSpec = AnnotationSpec
                 .builder(UtilityClass.class)
@@ -173,66 +229,66 @@ public class SimpleSpecificationGenerator extends AbstractProcessor {
         ClassName entityTypeName = ClassName.get(packageName, entityName);
         SpecMethodsBuilder specMethodsBuilder = new SpecMethodsBuilder(typeSpecBuilder, entityTypeName);
 
-        idFields.forEach((fieldName, fieldTypeName) -> {
+        fieldsMetadata.forEach(fieldMetadata -> {
             ParameterSpec fieldParameter = ParameterSpec
-                    .builder(fieldTypeName, fieldName)
+                    .builder(fieldMetadata.fieldTypeName, fieldMetadata.fieldName)
                     .build();
 
-            specMethodsBuilder.addIsNullMethods(fieldParameter);
-            specMethodsBuilder.addEqualMethods(fieldParameter);
-            specMethodsBuilder.addInCollectionMethods(fieldParameter);
-            specMethodsBuilder.addInVarargsElementsMethods(fieldParameter);
-        });
+            switch (fieldMetadata.fieldCategory) {
+                case PRIMARY_ID, ENUM -> {
+                    if (!fieldMetadata.isPrimitive) {
+                        specMethodsBuilder.addInCollectionMethods(fieldParameter);
+                    }
 
-        enumFields.forEach((fieldName, fieldTypeName) -> {
-            ParameterSpec fieldParameter = ParameterSpec
-                    .builder(fieldTypeName, fieldName)
-                    .build();
-
-            specMethodsBuilder.addEqualMethods(fieldParameter);
-            specMethodsBuilder.addInCollectionMethods(fieldParameter);
-            specMethodsBuilder.addInVarargsElementsMethods(fieldParameter);
-        });
-
-        collectionFields.forEach((fieldName, fieldTypeName) -> {
-            ParameterSpec fieldParameter = ParameterSpec
-                    .builder(fieldTypeName, fieldName)
-                    .build();
-
-            specMethodsBuilder.addIsEmptyMethods(fieldParameter);
-            specMethodsBuilder.addIsMemberMethods(fieldParameter);
-            specMethodsBuilder.addJoinMethods(fieldParameter);
-            specMethodsBuilder.addFetchMethods(fieldParameter);
-        });
-
-        regularFields.forEach((fieldName, fieldTypeName) -> {
-            ParameterSpec fieldParameter = ParameterSpec
-                    .builder(fieldTypeName, fieldName)
-                    .build();
-
-            switch (fieldTypeName.toString()) {
-                case "java.lang.String" -> {
-                    specMethodsBuilder.addIsNullMethods(fieldParameter);
                     specMethodsBuilder.addEqualMethods(fieldParameter);
-                    specMethodsBuilder.addInCollectionMethods(fieldParameter);
+                    specMethodsBuilder.addInVarargsElementsMethods(fieldParameter);
+                }
+
+                case FOREIGN_ID, CHARACTER -> {
+                    if (fieldMetadata.isNullable) {
+                        specMethodsBuilder.addIsNullMethods(fieldParameter);
+                    }
+
+                    if (!fieldMetadata.isPrimitive) {
+                        specMethodsBuilder.addInCollectionMethods(fieldParameter);
+                    }
+
+                    specMethodsBuilder.addEqualMethods(fieldParameter);
+                    specMethodsBuilder.addInVarargsElementsMethods(fieldParameter);
+                }
+
+                case COLLECTION -> {
+                    specMethodsBuilder.addIsEmptyMethods(fieldParameter);
+                    specMethodsBuilder.addIsMemberMethods(fieldParameter);
+                    specMethodsBuilder.addJoinMethods(fieldParameter);
+                    specMethodsBuilder.addFetchMethods(fieldParameter);
+                }
+
+                case STRING -> {
+                    if (fieldMetadata.isNullable) {
+                        specMethodsBuilder.addIsNullMethods(fieldParameter);
+                    }
+
+                    if (!fieldMetadata.isPrimitive) {
+                        specMethodsBuilder.addInCollectionMethods(fieldParameter);
+                    }
+
+                    specMethodsBuilder.addEqualMethods(fieldParameter);
                     specMethodsBuilder.addInVarargsElementsMethods(fieldParameter);
                     specMethodsBuilder.addLikeMethods(fieldParameter);
                     specMethodsBuilder.addStartsWithMethods(fieldParameter);
                     specMethodsBuilder.addEndsWithMethods(fieldParameter);
                 }
 
-                case "char" -> {
-                    specMethodsBuilder.addEqualMethods(fieldParameter);
-                    specMethodsBuilder.addInVarargsElementsMethods(fieldParameter);
-                }
+                case NUMERIC -> {
+                    if (fieldMetadata.isNullable) {
+                        specMethodsBuilder.addIsNullMethods(fieldParameter);
+                    }
 
-                case "java.lang.Character" -> {
-                    specMethodsBuilder.addEqualMethods(fieldParameter);
-                    specMethodsBuilder.addInCollectionMethods(fieldParameter);
-                    specMethodsBuilder.addInVarargsElementsMethods(fieldParameter);
-                }
+                    if (!fieldMetadata.isPrimitive) {
+                        specMethodsBuilder.addInCollectionMethods(fieldParameter);
+                    }
 
-                case "byte", "short", "int", "long", "float", "double" -> {
                     specMethodsBuilder.addEqualMethods(fieldParameter);
                     specMethodsBuilder.addInVarargsElementsMethods(fieldParameter);
                     specMethodsBuilder.addGreaterThanMethods(fieldParameter, false);
@@ -242,20 +298,11 @@ public class SimpleSpecificationGenerator extends AbstractProcessor {
                     specMethodsBuilder.addBetweenMethods(fieldParameter);
                 }
 
-                case "java.lang.Integer", "java.lang.Long", "java.lang.Float", "java.lang.Double" -> {
-                    specMethodsBuilder.addIsNullMethods(fieldParameter);
-                    specMethodsBuilder.addEqualMethods(fieldParameter);
-                    specMethodsBuilder.addInCollectionMethods(fieldParameter);
-                    specMethodsBuilder.addInVarargsElementsMethods(fieldParameter);
-                    specMethodsBuilder.addGreaterThanMethods(fieldParameter, false);
-                    specMethodsBuilder.addGreaterThanOrEqualToMethods(fieldParameter, false);
-                    specMethodsBuilder.addLessThanMethods(fieldParameter, false);
-                    specMethodsBuilder.addLessThanOrEqualToMethods(fieldParameter, false);
-                    specMethodsBuilder.addBetweenMethods(fieldParameter);
-                }
+                case TEMPORAL -> {
+                    if (fieldMetadata.isNullable) {
+                        specMethodsBuilder.addIsNullMethods(fieldParameter);
+                    }
 
-                case "java.time.LocalDate", "java.time.LocalTime", "java.time.LocalDateTime" -> {
-                    specMethodsBuilder.addIsNullMethods(fieldParameter);
                     specMethodsBuilder.addEqualMethods(fieldParameter);
                     specMethodsBuilder.addGreaterThanMethods(fieldParameter, true);
                     specMethodsBuilder.addGreaterThanOrEqualToMethods(fieldParameter, true);
@@ -264,11 +311,11 @@ public class SimpleSpecificationGenerator extends AbstractProcessor {
                     specMethodsBuilder.addBetweenMethods(fieldParameter);
                 }
 
-                case "boolean", "java.lang.Boolean" -> {
+                case BOOLEAN -> {
                     specMethodsBuilder.addIsTrueMethods(fieldParameter);
                 }
 
-                default -> {
+                case OBJECT -> {
                     specMethodsBuilder.addIsNullMethods(fieldParameter);
                 }
             }
