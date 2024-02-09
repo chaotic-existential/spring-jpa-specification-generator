@@ -126,3 +126,8 @@ public Specification<User> leftFetchFieldName() {
 // Negated versions of methods omitted ...
 // Other generated methods omitted ...
 ```
+
+## 🌱 Complete list of supported methods
+
+Generated methods implement every method available in `CriteriaBuilder` and a few composite methods.
+<br>You can check them out yourself by using the tool in your project or just by peeking into `TypeSpecBuilderUtil`.
